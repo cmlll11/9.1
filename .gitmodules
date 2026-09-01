@@ -1,0 +1,6 @@
+[submodule "third_party/GAP"]
+	path = third_party/GAP
+	url = https://github.com/OmidPoursaeed/Generative_Adversarial_Perturbations.git
+[submodule "third_party/BackdoorBench"]
+	path = third_party/BackdoorBench
+	url = https://github.com/SCLBD/BackdoorBench.git

@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+data/
+artifacts/
+outputs/
+reports/
+third_party/GAP/.pytest_cache/
+*.log
+*.pid
