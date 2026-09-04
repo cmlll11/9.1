@@ -36,3 +36,41 @@ The main outputs are written locally and ignored by Git:
 The official dependencies are kept as Git submodules under
 `third_party/BackdoorBench` and `third_party/GAP`. Clone with
 `--recurse-submodules`.
+
+## Stage 1A/1B PGD-Probe pilot
+
+The new pilot reuses existing checkpoints and does not train GAP generators.
+Stage 1A uses Clean seeds 0 and 1 with Blended and WaNet seeds 0 and 1. It
+searches CIFAR-100 with a coarse targeted-PGD epsilon grid, refines the Clean
+Top-40 using 100-step PGD with three restarts, and compares the resulting
+Top-30 samples on paired Clean/Backdoor models. Stage 1B performs within-model
+and leave-one-Clean-model-out Ridge Probe evaluation on Clean seeds 0--2.
+
+Run Stage 1A on the GPU server:
+
+```bash
+cd /path/to/9.1
+PYTHON_BIN=/path/to/venv/bin/python \
+DATA_ROOT=/path/to/data \
+MODEL_ROOT=/path/to/9.1/artifacts/models/hard_sample_gap \
+GPU_ID=0 \
+bash bash/run_stage1a_bridge.sh
+```
+
+After Stage 1A, set `STAGE1A_RUN_DIR` to its result directory and run Stage 1B:
+
+```bash
+cd /path/to/9.1
+STAGE1A_RUN_DIR=/path/to/9.1/results/stage1a_bridge/stage1a_YYYYMMDDTHHMMSSZ \
+PYTHON_BIN=/path/to/venv/bin/python \
+DATA_ROOT=/path/to/data \
+MODEL_ROOT=/path/to/9.1/artifacts/models/hard_sample_gap \
+GPU_ID=0 \
+bash bash/run_stage1b_probe.sh
+```
+
+Stage 1B requires the existing partition metadata at
+`$DATA_ROOT/hard_sample_gap/shared/partition.json` for Stage 1B, because the Probe
+labels intentionally come from each model's known training samples. Results
+are written under `results/stage1a_bridge/` and `results/stage1b_probe/`; no
+existing run directory is overwritten.

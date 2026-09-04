@@ -1,4 +1,4 @@
-"""Small CIFAR-10 data helpers for raw-pixel UAP training and evaluation."""
+"""Small raw-pixel dataset helpers used by the pilot experiments."""
 
 from __future__ import annotations
 
@@ -16,6 +16,25 @@ def cifar10_dataset(root: str, *, train: bool) -> Dataset:
     if dataset_root.name != "cifar10":
         dataset_root = dataset_root / "cifar10"
     return datasets.CIFAR10(
+        root=str(dataset_root),
+        train=train,
+        transform=transforms.ToTensor(),
+        download=False,
+    )
+
+
+def cifar100_dataset(root: str, *, train: bool) -> Dataset:
+    """Return CIFAR-100 tensors in ``[0, 1]`` without data augmentation.
+
+    The helper deliberately mirrors :func:`cifar10_dataset`: normalization is
+    performed by the model wrapper, not by the dataset.  ``root`` may point to
+    the shared data directory or directly to a ``cifar100`` directory.
+    """
+
+    dataset_root = Path(root)
+    if dataset_root.name != "cifar100":
+        dataset_root = dataset_root / "cifar100"
+    return datasets.CIFAR100(
         root=str(dataset_root),
         train=train,
         transform=transforms.ToTensor(),
