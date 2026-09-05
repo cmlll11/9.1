@@ -15,7 +15,15 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 
+# The original pilot grid is kept unchanged for reproducibility of Stage 1A/1B.
 EPSILON_GRID: tuple[float, ...] = tuple(value / 255.0 for value in (1, 2, 4, 8, 16, 32))
+
+# The transfer experiment resolves the informative low-radius region more
+# finely.  Values are stored in raw-image units even though the protocol is
+# reported in pixel units divided by 255.
+FINE_EPSILON_GRID: tuple[float, ...] = tuple(
+    value / 255.0 for value in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0)
+)
 
 
 @dataclass

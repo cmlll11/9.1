@@ -74,3 +74,27 @@ Stage 1B requires the existing partition metadata at
 labels intentionally come from each model's known training samples. Results
 are written under `results/stage1a_bridge/` and `results/stage1b_probe/`; no
 existing run directory is overwritten.
+
+## CIFAR-100 Probe transfer experiment
+
+The transfer experiment trains a Ridge Probe from 1,000 CIFAR-100 train images
+using Clean seeds 3 and 4, then applies it to a disjoint 1,000-image CIFAR-100
+test pool on target Clean seeds 0--2. It compares Probe Top-100,
+target-margin Top-100, and a refined-PGD reference obtained from coarse Top-300
+selection. The primary Clean-only selector comparison is followed by same-seed
+Clean versus BadNet, LF, Blended, and WaNet evaluation.
+
+Run it on the GPU server with:
+
+```bash
+cd /path/to/9.1
+PYTHON_BIN=/path/to/venv/bin/python \
+DATA_ROOT=/path/to/data \
+MODEL_ROOT=/path/to/9.1/artifacts/models/hard_sample_gap \
+BATCH_SIZE=64 \
+GPU_ID=0 \
+bash bash/run_probe_cifar100_transfer.sh
+```
+
+The fine grid is `0.5, 1, 1.5, 2, 3, 4, 8, 16, 32 / 255`. Results are written
+under `results/stage1b_cifar100_transfer/`.
