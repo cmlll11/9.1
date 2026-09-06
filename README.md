@@ -131,3 +131,35 @@ An existing model-gate report can optionally be supplied through
 `QUALITY_REPORT=/path/to/hard_sample_gap_model_gates.json`; its native trigger
 ASR values are copied into `model_quality.csv` without adding trigger logic to
 the untargeted experiment.
+
+## Stage 1D targeted-robust trigger alignment mechanism experiment
+
+Stage 1D independently selects targeted-robust CIFAR-100 samples for each
+Clean seed (coarse Top-300 followed by refined Top-100), then evaluates the
+same seed-matched samples on Clean and BadNet models.  It compares the
+penultimate `avgpool` feature change caused by the official BadNet trigger
+with the feature change caused by targeted PGD to class 0.  The analysis uses
+the first-success endpoint on the `0.5, 1, 1.5, 2, 3, 4 / 255` grid and also
+reports fixed `1, 1.5, 2 / 255` endpoints, trigger/adversarial direction
+concentration, and a shuffled-trigger control.
+
+This is a mechanism experiment with a known BadNet trigger and target, not a
+deployment detector.  It requires Clean and BadNet checkpoints for seeds 0--2
+and the official trigger at
+`third_party/BackdoorBench/resource/badnet/trigger_image.png`.
+
+Run it on the GPU server with:
+
+```bash
+cd /path/to/9.1
+PYTHON_BIN=/home/cml/.conda/envs/mdl-uap/bin/python \
+DATA_ROOT=/home/cml/8.11/data \
+MODEL_ROOT=/home/cml/8.11/artifacts/models/hard_sample_gap \
+QUALITY_REPORT=/home/cml/8.11/reports/hard_sample_gap_model_gates.json \
+BATCH_SIZE=64 \
+GPU_ID=0 \
+bash bash/run_stage1d_trigger_alignment.sh
+```
+
+Results are written to a unique directory under
+`results/stage1d_trigger_alignment/`.

@@ -44,6 +44,24 @@ class PGDResult:
 
 
 @dataclass
+class TargetedEndpointResult:
+    """Targeted-PGD endpoint selected by the lowest target loss.
+
+    ``success`` records whether any iterate in any restart reached the target
+    class.  ``endpoint`` is always populated: it is the iterate with the
+    lowest target cross-entropy, including for failed attacks.  Keeping an
+    endpoint for failures makes feature-direction comparisons use the same
+    representation for success and failure groups.
+    """
+
+    endpoint: Tensor
+    success: Tensor
+    endpoint_linf: Tensor
+    endpoint_prediction: Tensor
+    target_loss: Tensor
+
+
+@dataclass
 class GridRadiusResult:
     """First-success epsilon on a discrete grid, including right censoring."""
 
@@ -279,6 +297,85 @@ def targeted_pgd(
         success=torch.isfinite(best_linf),
         best_linf=best_linf,
         best_prediction=best_prediction,
+    )
+
+
+def targeted_pgd_endpoint(
+    model: nn.Module,
+    images: Tensor,
+    *,
+    target: int,
+    epsilon: float,
+    steps: int,
+    alpha: float,
+    random_start: bool,
+    restarts: int,
+) -> TargetedEndpointResult:
+    """Run targeted PGD and retain one comparable endpoint per image.
+
+    Unlike :func:`targeted_pgd`, this function returns an adversarial image for
+    every input, including failed attacks.  The returned endpoint is the
+    iterate with the smallest target cross-entropy over all steps and
+    restarts.  ``success`` is tracked independently as ``True`` when any
+    iterate was predicted as ``target``.  This separation is intentional:
+    the Stage 1D mechanism experiment compares feature changes for successful
+    and failed attacks at the same epsilon grid without dropping failures.
+
+    Inputs are raw ``[N, 3, H, W]`` images in ``[0, 1]``.  Epsilon and alpha
+    are also expressed in raw pixel units.
+    """
+
+    if images.ndim != 4 or images.shape[1] != 3:
+        raise ValueError(f"expected images with shape [N, 3, H, W], got {tuple(images.shape)}")
+    if not 0.0 < float(epsilon) <= 1.0:
+        raise ValueError("epsilon must be in (0, 1]")
+    if int(steps) <= 0 or int(restarts) <= 0:
+        raise ValueError("steps and restarts must be positive")
+
+    model.eval()
+    targets = _target_tensor(images, target)
+    n = images.shape[0]
+    best_loss = torch.full((n,), float("inf"), device=images.device)
+    best_endpoint = images.detach().clone()
+    best_linf = torch.zeros((n,), device=images.device)
+    best_prediction = model(images).argmax(dim=1)
+    attack_success = best_prediction.eq(targets)
+
+    for _ in range(int(restarts)):
+        if random_start:
+            delta = torch.empty_like(images).uniform_(-float(epsilon), float(epsilon))
+            delta = _project_delta(images, delta, epsilon)
+        else:
+            delta = torch.zeros_like(images)
+
+        for _ in range(int(steps)):
+            delta.requires_grad_(True)
+            adversarial = (images + delta).clamp(0.0, 1.0)
+            logits = model(adversarial)
+            losses = F.cross_entropy(logits, targets, reduction="none")
+            gradient = torch.autograd.grad(losses.sum(), delta, only_inputs=True)[0]
+
+            with torch.no_grad():
+                # Targeted PGD minimizes target cross-entropy.
+                delta = _project_delta(images, delta - float(alpha) * gradient.sign(), epsilon)
+                endpoint = (images + delta).clamp(0.0, 1.0)
+                endpoint_logits = model(endpoint)
+                endpoint_losses = F.cross_entropy(endpoint_logits, targets, reduction="none")
+                endpoint_predictions = endpoint_logits.argmax(dim=1)
+                attack_success |= endpoint_predictions.eq(targets)
+                better = endpoint_losses < best_loss
+                best_loss = torch.where(better, endpoint_losses, best_loss)
+                current_linf = delta.abs().flatten(1).amax(dim=1)
+                best_linf = torch.where(better, current_linf, best_linf)
+                best_prediction = torch.where(better, endpoint_predictions, best_prediction)
+                best_endpoint = torch.where(better.view(-1, 1, 1, 1), endpoint, best_endpoint)
+
+    return TargetedEndpointResult(
+        endpoint=best_endpoint.detach(),
+        success=attack_success.detach(),
+        endpoint_linf=best_linf.detach(),
+        endpoint_prediction=best_prediction.detach(),
+        target_loss=best_loss.detach(),
     )
 
 
