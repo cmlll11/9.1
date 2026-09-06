@@ -98,3 +98,36 @@ bash bash/run_probe_cifar100_transfer.sh
 
 The fine grid is `0.5, 1, 1.5, 2, 3, 4, 8, 16, 32 / 255`. Results are written
 under `results/stage1b_cifar100_transfer/`.
+
+## Stage 1C target-free untargeted transfer experiment
+
+Stage 1C trains a target-free Ridge Probe on CIFAR-100 train images with
+Clean seeds 3 and 4.  It evaluates Probe, top-1/top-2 margin, and a refined
+PGD reference on Clean seeds 0--2, then performs deployment-style independent
+selection on Clean, BadNet, LF, Blended, and WaNet models.  Part B also uses a
+fixed Random-100 set shared within each seed as the no-selection baseline.
+
+Untargeted success means that the model prediction changes from its original
+prediction; no CIFAR-10 target class is supplied.  The grid is
+`0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 8, 16, 32 / 255`.  The strong pass on
+`CoarseTop300` is cached and reused for the refined reference and the other
+Part A selectors.  Results are written under
+`results/stage1c_cifar100_untargeted/`.
+
+Run it on the GPU server with:
+
+```bash
+cd /path/to/9.1
+PYTHON_BIN=/home/cml/.conda/envs/mdl-uap/bin/python \
+DATA_ROOT=/home/cml/8.11/data \
+MODEL_ROOT=/home/cml/8.11/artifacts/models/hard_sample_gap \
+BACKDOORBENCH_ROOT=/path/to/9.1/third_party/BackdoorBench \
+BATCH_SIZE=64 \
+GPU_ID=0 \
+bash bash/run_probe_cifar100_untargeted.sh
+```
+
+An existing model-gate report can optionally be supplied through
+`QUALITY_REPORT=/path/to/hard_sample_gap_model_gates.json`; its native trigger
+ASR values are copied into `model_quality.csv` without adding trigger logic to
+the untargeted experiment.
