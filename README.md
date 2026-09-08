@@ -134,19 +134,23 @@ the untargeted experiment.
 
 ## Stage 1D targeted-robust trigger alignment mechanism experiment
 
-Stage 1D independently selects targeted-robust CIFAR-100 samples for each
-Clean seed (coarse Top-300 followed by refined Top-100), then evaluates the
-same seed-matched samples on Clean and BadNet models.  It compares the
-penultimate `avgpool` feature change caused by the official BadNet trigger
-with the feature change caused by targeted PGD to class 0.  The analysis uses
+Stage 1D independently selects targeted-robust CIFAR-100 samples using Clean
+seed 0 (coarse Top-300 followed by refined Top-100), then evaluates the same
+sample set on Clean seed 0 and the seed-0 BadNet, LF, Blended, and WaNet
+models. Each model uses its own training-time trigger: the official BadNet
+patch, LF pattern, Blended image with test alpha 0.2, or the exact WaNet grids
+saved in `state_dict.pt`. Clean uses the BadNet patch as a fixed trigger
+control. The experiment compares the penultimate `avgpool` feature change
+caused by each trigger with the feature change caused by targeted PGD to class
+0. The analysis uses
 the first-success endpoint on the `0.5, 1, 1.5, 2, 3, 4 / 255` grid and also
 reports fixed `1, 1.5, 2 / 255` endpoints, trigger/adversarial direction
 concentration, and a shuffled-trigger control.
 
-This is a mechanism experiment with a known BadNet trigger and target, not a
-deployment detector.  It requires Clean and BadNet checkpoints for seeds 0--2
-and the official trigger at
-`third_party/BackdoorBench/resource/badnet/trigger_image.png`.
+This is a mechanism experiment with a known target, not a deployment detector.
+It requires seed-0 checkpoints for the Clean, BadNet, LF, Blended, and WaNet
+groups, the official BadNet/LF/Blended resources, and the WaNet seed-0
+`state_dict.pt` containing `identity_grid` and `noise_grid`.
 
 Run it on the GPU server with:
 

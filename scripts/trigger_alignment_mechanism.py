@@ -23,6 +23,7 @@ from typing import Iterable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,67 @@ def parse_floats(value: str) -> tuple[float, ...]:
     if not values or any(value <= 0 for value in values) or tuple(sorted(values)) != values:
         raise ValueError("epsilon grid must be a non-empty ascending list of positive numbers")
     return values
+
+
+def build_trigger_transforms(
+    *,
+    backdoorbench_root: Path,
+    model_root: Path,
+    groups: list[str],
+    seed: int,
+    badnet_path: Path | None,
+    lf_path: Path | None,
+    blended_path: Path | None,
+    wanet_state_path: Path | None,
+    blended_alpha: float,
+    wanet_s: float,
+    wanet_grid_rescale: float,
+    device: torch.device,
+) -> tuple[dict[str, callable], dict[str, str]]:
+    """Construct the trigger transform belonging to each requested model.
+
+    Clean uses the BadNet patch as a fixed trigger control.  Each backdoor
+    model uses its own training-time trigger: LF additive noise, Blended
+    alpha-compositing, or the exact WaNet grids saved with the model.
+    """
+
+    transforms_by_group: dict[str, callable] = {}
+    source_by_group: dict[str, str] = {}
+
+    badnet_path = badnet_path or backdoorbench_root / "resource" / "badnet" / "trigger_image.png"
+    if "clean" in groups or "badnet" in groups:
+        badnet_trigger = load_badnet_trigger(badnet_path)
+        for group in ("clean", "badnet"):
+            if group in groups:
+                transforms_by_group[group] = lambda images, trigger=badnet_trigger: apply_badnet_trigger(images, trigger)
+                source_by_group[group] = str(badnet_path)
+
+    if "lf" in groups:
+        lf_path = lf_path or backdoorbench_root / "resource" / "lowFrequency" / "cifar10_preactresnet18_0_255.npy"
+        lf_trigger = load_lf_trigger(lf_path)
+        transforms_by_group["lf"] = lambda images, trigger=lf_trigger: apply_lf_trigger(images, trigger)
+        source_by_group["lf"] = str(lf_path)
+
+    if "blended" in groups:
+        blended_path = blended_path or backdoorbench_root / "resource" / "blended" / "hello_kitty.jpeg"
+        blended_trigger = load_blended_trigger(blended_path)
+        transforms_by_group["blended"] = lambda images, trigger=blended_trigger: apply_blended_trigger(
+            images, trigger, alpha=blended_alpha
+        )
+        source_by_group["blended"] = str(blended_path)
+
+    if "wanet" in groups:
+        wanet_state_path = wanet_state_path or model_root / "wanet" / f"seed{seed}" / "state_dict.pt"
+        identity_grid, noise_grid = load_wanet_grids(wanet_state_path, device=device)
+        transforms_by_group["wanet"] = lambda images, identity=identity_grid, noise=noise_grid: apply_wanet_trigger(
+            images, identity, noise, s=wanet_s, grid_rescale=wanet_grid_rescale
+        )
+        source_by_group["wanet"] = str(wanet_state_path)
+
+    missing = [group for group in groups if group not in transforms_by_group]
+    if missing:
+        raise ValueError(f"unsupported backdoor groups for Stage 1D: {missing}")
+    return transforms_by_group, source_by_group
 
 
 def checkpoint_path(model_root: Path, group: str, seed: int) -> Path:
@@ -112,6 +174,84 @@ def apply_badnet_trigger(images: torch.Tensor, trigger: torch.Tensor) -> torch.T
     trigger = trigger.to(device=images.device, dtype=images.dtype).unsqueeze(0)
     mask = trigger > 0
     return torch.where(mask, trigger, images)
+
+
+def load_lf_trigger(path: str | Path) -> torch.Tensor:
+    """Load BackdoorBench's CIFAR-10 low-frequency additive pattern.
+
+    BackdoorBench applies this pattern in uint8 image space with values in
+    ``[0, 255]``.  The experiment keeps images in ``[0, 1]``, so the pattern
+    is converted to that same scale here.
+    """
+
+    array = np.load(path)
+    if array.shape != (32, 32, 3):
+        raise ValueError(f"LF trigger must have shape (32, 32, 3), got {array.shape}")
+    return torch.from_numpy(array.astype(np.float32) / 255.0).permute(2, 0, 1).contiguous()
+
+
+def apply_lf_trigger(images: torch.Tensor, trigger: torch.Tensor) -> torch.Tensor:
+    """Apply BackdoorBench's clipped uint8-equivalent LF additive trigger."""
+
+    trigger = trigger.to(device=images.device, dtype=images.dtype).unsqueeze(0)
+    return torch.clamp(images + trigger, 0.0, 1.0)
+
+
+def load_blended_trigger(path: str | Path) -> torch.Tensor:
+    """Load and resize the official Blended trigger image to ``[3, 32, 32]``."""
+
+    image = Image.open(path).convert("RGB").resize((32, 32), Image.Resampling.BILINEAR)
+    array = np.asarray(image, dtype=np.float32) / 255.0
+    return torch.from_numpy(array).permute(2, 0, 1).contiguous()
+
+
+def apply_blended_trigger(
+    images: torch.Tensor,
+    trigger: torch.Tensor,
+    *,
+    alpha: float,
+) -> torch.Tensor:
+    """Apply BackdoorBench's test-time alpha blending in raw image space."""
+
+    trigger = trigger.to(device=images.device, dtype=images.dtype).unsqueeze(0)
+    return torch.clamp((1.0 - float(alpha)) * images + float(alpha) * trigger, 0.0, 1.0)
+
+
+def load_wanet_grids(path: str | Path, *, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load the exact WaNet grids saved by BackdoorBench during training.
+
+    The WaNet training command used by this repository saves ``state_dict.pt``
+    every ten epochs, including the final checkpoint.  That file contains the
+    ``identity_grid`` and ``noise_grid`` needed to reproduce the learned
+    geometric trigger on arbitrary images.
+    """
+
+    state = torch.load(path, map_location=device, weights_only=False)
+    if "identity_grid" not in state or "noise_grid" not in state:
+        raise KeyError(f"WaNet state must contain identity_grid and noise_grid: {path}")
+    identity_grid = state["identity_grid"].to(device=device, dtype=torch.float32)
+    noise_grid = state["noise_grid"].to(device=device, dtype=torch.float32)
+    if tuple(identity_grid.shape) != (1, 32, 32, 2) or tuple(noise_grid.shape) != (1, 32, 32, 2):
+        raise ValueError(
+            "WaNet grids must both have shape (1, 32, 32, 2), "
+            f"got identity={tuple(identity_grid.shape)}, noise={tuple(noise_grid.shape)}"
+        )
+    return identity_grid, noise_grid
+
+
+def apply_wanet_trigger(
+    images: torch.Tensor,
+    identity_grid: torch.Tensor,
+    noise_grid: torch.Tensor,
+    *,
+    s: float,
+    grid_rescale: float,
+) -> torch.Tensor:
+    """Apply the deterministic WaNet grid used for ordinary backdoor samples."""
+
+    grid = (identity_grid + float(s) * noise_grid / images.shape[-2]) * float(grid_rescale)
+    grid = torch.clamp(grid, -1.0, 1.0).expand(images.shape[0], -1, -1, -1)
+    return F.grid_sample(images, grid, align_corners=True)
 
 
 @torch.inference_mode()
@@ -384,8 +524,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backdoorbench-root", required=True)
     parser.add_argument("--output-root", default="results/stage1d_trigger_alignment")
     parser.add_argument("--clean-group", default="clean_select_shared")
-    parser.add_argument("--backdoor-group", default="badnet")
-    parser.add_argument("--clean-seeds", default="0,1,2")
+    parser.add_argument("--backdoor-groups", default="badnet,lf,blended,wanet")
+    parser.add_argument("--clean-seeds", default="0")
     parser.add_argument("--target", type=int, default=0)
     parser.add_argument("--candidate-count", type=int, default=1000)
     parser.add_argument("--candidate-seed", type=int, default=2031)
@@ -402,6 +542,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--quality-report", default=None)
     parser.add_argument("--trigger-path", default=None)
+    parser.add_argument("--lf-trigger-path", default=None)
+    parser.add_argument("--blended-trigger-path", default=None)
+    parser.add_argument("--wanet-state-path", default=None)
+    parser.add_argument("--blended-alpha", type=float, default=0.2)
+    parser.add_argument("--wanet-s", type=float, default=0.5)
+    parser.add_argument("--wanet-grid-rescale", type=float, default=1.0)
     parser.add_argument("--shuffle-repeats", type=int, default=20)
     parser.add_argument("--device", default="cuda:0")
     return parser.parse_args()
@@ -412,6 +558,9 @@ def main() -> None:
 
     args = parse_args()
     clean_seeds = parse_ints(args.clean_seeds)
+    backdoor_groups = [item.strip() for item in args.backdoor_groups.split(",") if item.strip()]
+    if not backdoor_groups:
+        raise ValueError("at least one backdoor group is required")
     selection_eps = parse_floats(args.selection_eps_pixels)
     analysis_eps = parse_floats(args.analysis_eps_pixels)
     fixed_eps = parse_floats(args.fixed_report_eps_pixels)
@@ -424,9 +573,21 @@ def main() -> None:
     model_root = Path(args.model_root)
     backdoorbench_root = Path(args.backdoorbench_root)
     trigger_path = Path(args.trigger_path) if args.trigger_path else backdoorbench_root / "resource" / "badnet" / "trigger_image.png"
-    if not trigger_path.is_file():
-        raise FileNotFoundError(f"official BadNet trigger not found: {trigger_path}")
-    trigger = load_badnet_trigger(trigger_path)
+    trigger_groups = ["clean"] + backdoor_groups
+    trigger_transforms, trigger_sources = build_trigger_transforms(
+        backdoorbench_root=backdoorbench_root,
+        model_root=model_root,
+        groups=trigger_groups,
+        seed=clean_seeds[0],
+        badnet_path=trigger_path,
+        lf_path=Path(args.lf_trigger_path) if args.lf_trigger_path else None,
+        blended_path=Path(args.blended_trigger_path) if args.blended_trigger_path else None,
+        wanet_state_path=Path(args.wanet_state_path) if args.wanet_state_path else None,
+        blended_alpha=args.blended_alpha,
+        wanet_s=args.wanet_s,
+        wanet_grid_rescale=args.wanet_grid_rescale,
+        device=device,
+    )
     try:
         import yaml
         resolved_config = {
@@ -436,7 +597,10 @@ def main() -> None:
             "selection_epsilon_pixels": list(selection_eps),
             "analysis_epsilon_pixels": list(analysis_eps),
             "fixed_report_epsilon_pixels": list(fixed_eps),
-            "trigger_path": str(trigger_path),
+            "trigger_sources": trigger_sources,
+            "blended_alpha": float(args.blended_alpha),
+            "wanet_s": float(args.wanet_s),
+            "wanet_grid_rescale": float(args.wanet_grid_rescale),
             "feature_layer": "model.avgpool",
             "feature_dimension": 512,
         }
@@ -506,7 +670,7 @@ def main() -> None:
     trigger_rows: list[dict] = []
     alignment_rows: list[dict] = []
     feature_dimension: int | None = None
-    model_specs = [("clean", args.clean_group), ("badnet", args.backdoor_group)]
+    model_specs = [("clean", args.clean_group)] + [(group, group) for group in backdoor_groups]
 
     for seed in clean_seeds:
         indices = selected_by_seed[seed]
@@ -526,7 +690,7 @@ def main() -> None:
                 endpoint_by_eps: dict[float, list[dict]] = {float(eps): [] for eps in analysis_eps}
                 for batch_indices, images, _ in batch_images(data, indices, batch_size=args.batch_size, device=device):
                     base_logits, base_features = extractor(images)
-                    triggered_images = apply_badnet_trigger(images, trigger)
+                    triggered_images = trigger_transforms[model_group](images)
                     trigger_logits, trigger_features = extractor(triggered_images)
                     base_np = base_features.cpu().numpy()
                     trigger_np = trigger_features.cpu().numpy()
@@ -577,6 +741,7 @@ def main() -> None:
                     row = {
                         "model_group": model_group,
                         "seed": int(seed),
+                        "trigger_source": trigger_sources[model_group],
                         "sample_index": int(sample_index),
                         "original_prediction": int(original_predictions[position]),
                         "trigger_prediction": int(trigger_predictions[position]),
@@ -602,6 +767,7 @@ def main() -> None:
                         attack_rows.append({
                             "model_group": model_group,
                             "seed": int(seed),
+                            "trigger_source": trigger_sources[model_group],
                             "sample_index": int(sample_index),
                             "epsilon_pixels": float(eps_pixels),
                             "before_prediction": int(original_predictions[position]),
@@ -690,7 +856,7 @@ def main() -> None:
         write_log(output, f"seed{seed}: completed Clean/BadNet feature analysis")
 
     metric_rows: list[dict] = []
-    for model_group in ("clean", "badnet"):
+    for model_group, _checkpoint_group in model_specs:
         for seed in clean_seeds:
             for protocol in ["first_success"] + [f"fixed_{eps:g}" for eps in fixed_eps]:
                 subset = [row for row in alignment_rows if row["model_group"] == model_group and row["seed"] == seed and row["protocol"] == protocol]
@@ -738,7 +904,7 @@ def main() -> None:
         "protocol": "stage1d-targeted-robust-trigger-alignment-v1",
         "target": int(args.target),
         "clean_group": args.clean_group,
-        "backdoor_group": args.backdoor_group,
+        "backdoor_groups": backdoor_groups,
         "clean_seeds": clean_seeds,
         "candidate_count": len(candidate_indices),
         "candidate_seed": int(args.candidate_seed),
@@ -747,7 +913,10 @@ def main() -> None:
         "selection_epsilon_pixels": list(selection_eps),
         "analysis_epsilon_pixels": list(analysis_eps),
         "fixed_report_epsilon_pixels": list(fixed_eps),
-        "trigger_path": str(trigger_path),
+        "trigger_sources": trigger_sources,
+        "blended_alpha": float(args.blended_alpha),
+        "wanet_s": float(args.wanet_s),
+        "wanet_grid_rescale": float(args.wanet_grid_rescale),
         "feature_layer": "model.avgpool",
         "feature_dimension": feature_dimension,
         "shuffle_repeats": int(args.shuffle_repeats),

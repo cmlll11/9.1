@@ -28,13 +28,19 @@ if [[ ! -d "${BACKDOORBENCH_ROOT}" ]]; then
     exit 1
 fi
 TRIGGER_PATH="${TRIGGER_PATH:-${BACKDOORBENCH_ROOT}/resource/badnet/trigger_image.png}"
-if [[ ! -f "${TRIGGER_PATH}" ]]; then
-    echo "ERROR: official BadNet trigger not found: ${TRIGGER_PATH}" >&2
-    exit 1
-fi
+LF_TRIGGER_PATH="${LF_TRIGGER_PATH:-${BACKDOORBENCH_ROOT}/resource/lowFrequency/cifar10_preactresnet18_0_255.npy}"
+BLENDED_TRIGGER_PATH="${BLENDED_TRIGGER_PATH:-${BACKDOORBENCH_ROOT}/resource/blended/hello_kitty.jpeg}"
+WANET_STATE_PATH="${WANET_STATE_PATH:-${MODEL_ROOT}/wanet/seed0/state_dict.pt}"
+for trigger_file in "${TRIGGER_PATH}" "${LF_TRIGGER_PATH}" "${BLENDED_TRIGGER_PATH}" "${WANET_STATE_PATH}"; do
+    if [[ ! -f "${trigger_file}" ]]; then
+        echo "ERROR: required trigger/state file not found: ${trigger_file}" >&2
+        exit 1
+    fi
+done
 
-for group in "${CLEAN_GROUP:-clean_select_shared}" "${BACKDOOR_GROUP:-badnet}"; do
-    for seed in 0 1 2; do
+IFS=',' read -r -a BACKDOOR_GROUP_ARRAY <<< "${BACKDOOR_GROUPS:-badnet,lf,blended,wanet}"
+for group in "${CLEAN_GROUP:-clean_select_shared}" "${BACKDOOR_GROUP_ARRAY[@]}"; do
+    for seed in 0; do
         checkpoint="${MODEL_ROOT}/${group}/seed${seed}/attack_result.pt"
         if [[ ! -f "${checkpoint}" ]]; then
             echo "ERROR: checkpoint not found: ${checkpoint}" >&2
@@ -65,10 +71,13 @@ fi
         --model-root "${MODEL_ROOT}" \
         --backdoorbench-root "${BACKDOORBENCH_ROOT}" \
         --trigger-path "${TRIGGER_PATH}" \
+        --lf-trigger-path "${LF_TRIGGER_PATH}" \
+        --blended-trigger-path "${BLENDED_TRIGGER_PATH}" \
+        --wanet-state-path "${WANET_STATE_PATH}" \
         --output-root "${OUTPUT_ROOT}" \
         --clean-group "${CLEAN_GROUP:-clean_select_shared}" \
-        --backdoor-group "${BACKDOOR_GROUP:-badnet}" \
-        --clean-seeds "0,1,2" \
+        --backdoor-groups "${BACKDOOR_GROUPS:-badnet,lf,blended,wanet}" \
+        --clean-seeds "0" \
         --candidate-count "${CANDIDATE_COUNT:-1000}" \
         --candidate-seed "${CANDIDATE_SEED:-2031}" \
         --top-coarse "${TOP_COARSE:-300}" \
