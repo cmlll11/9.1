@@ -11,6 +11,8 @@ DATA_ROOT="${DATA_ROOT:-${REPO_ROOT}/data}"
 MODEL_ROOT="${MODEL_ROOT:-${REPO_ROOT}/artifacts/models/hard_sample_gap}"
 BACKDOORBENCH_ROOT="${BACKDOORBENCH_ROOT:-${REPO_ROOT}/third_party/BackdoorBench}"
 RECORD_ROOT="${RECORD_ROOT:-${DATA_ROOT%/data}/third_party/BackdoorBench/record}"
+ADAPTIVE_BLEND_ROOT="${ADAPTIVE_BLEND_ROOT:-}"
+ADAPTIVE_BLEND_MODEL_PATH="${ADAPTIVE_BLEND_MODEL_PATH:-${MODEL_ROOT}/adaptive_blend/seed0/official_model.pt}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/results/stage1d_trigger_alignment}"
 QUALITY_REPORT="${QUALITY_REPORT:-}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
@@ -80,6 +82,10 @@ fi
 IFS=',' read -r -a BACKDOOR_GROUP_ARRAY <<< "${BACKDOOR_GROUPS}"
 for group in "${BACKDOOR_GROUP_ARRAY[@]}"; do
     if ! checkpoint="$(resolve_checkpoint "${group}")"; then
+        if [[ "${group}" == "adaptive_blend" && -f "${ADAPTIVE_BLEND_MODEL_PATH}" ]]; then
+            echo "checkpoint ${group}: ${ADAPTIVE_BLEND_MODEL_PATH}"
+            continue
+        fi
         echo "ERROR: seed0 checkpoint not found for backdoor group: ${group}" >&2
         exit 1
     fi
@@ -118,6 +124,8 @@ TRIGGER_ARGS=()
         --data-root "${DATA_ROOT}" \
         --model-root "${MODEL_ROOT}" \
         --backdoorbench-root "${BACKDOORBENCH_ROOT}" \
+        --adaptive-blend-root "${ADAPTIVE_BLEND_ROOT}" \
+        --adaptive-blend-model-path "${ADAPTIVE_BLEND_MODEL_PATH}" \
         "${RECORD_ARGS[@]}" \
         "${TRIGGER_ARGS[@]}" \
         --output-root "${OUTPUT_ROOT}" \

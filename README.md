@@ -168,3 +168,25 @@ bash bash/run_stage1d_trigger_alignment.sh
 
 Results are written to a unique directory under
 `results/stage1d_trigger_alignment/`.
+
+Before Stage 1D, retrain the models with the official implementations on the
+complete CIFAR-10 training split:
+
+```bash
+cd /path/to/9.1
+PYTHON_BIN=/home/cml/.conda/envs/mdl-uap/bin/python \
+DATA_ROOT=/home/cml/8.11/data \
+MODEL_ROOT=/home/cml/8.11/artifacts/models/stage1d_official \
+BACKDOORBENCH_ROOT=/home/cml/9.1/third_party/BackdoorBench \
+ADAPTIVE_BLEND_ROOT=/path/to/backdoor-toolbox \
+ADAPTIVE_BLEND_MODEL_PATH=/path/to/backdoor-toolbox/models/.../model.pt \
+GPU_ID=1 \
+bash bash/run_stage1d_train_official.sh
+```
+
+The training launcher uses the official BackdoorBench YAML files for
+BadNet, Blended, WaNet, SSBA, and Input-Aware, and the official
+backdoor-toolbox commands for Adaptive-Blend. It uses target class 0 and
+100 epochs for the BackdoorBench classifiers. The existing quality gate is
+`clean accuracy >= 0.90`, `backdoor clean accuracy >= 0.90`, `native ASR >=
+0.90`, and `clean-trigger ASR <= 0.10`.

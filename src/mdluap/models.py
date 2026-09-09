@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 import torch
@@ -62,3 +63,47 @@ def load_attack_result_model(
     for parameter in wrapped.parameters():
         parameter.requires_grad_(False)
     return wrapped, result
+
+
+def load_backdoor_toolbox_resnet18(
+    model_path: str,
+    *,
+    backdoor_toolbox_root: str,
+    device: torch.device,
+) -> tuple[NormalizedClassifier, dict]:
+    """Load the official backdoor-toolbox CIFAR-10 ResNet-18 checkpoint.
+
+    Adaptive-Blend is not serialized as a BackdoorBench ``attack_result.pt``.
+    The official toolbox stores the classifier state dictionary directly, so
+    this adapter imports the toolbox's own ``utils/resnet.py`` architecture
+    and applies the same CIFAR-10 normalization used by the toolbox.
+    """
+
+    root = Path(backdoor_toolbox_root).resolve()
+    source = root / "utils" / "resnet.py"
+    if not source.is_file():
+        raise FileNotFoundError(f"backdoor-toolbox ResNet source not found: {source}")
+    module_name = "stage1d_backdoor_toolbox_resnet"
+    spec = importlib.util.spec_from_file_location(module_name, source)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot import backdoor-toolbox architecture from {source}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    payload = torch.load(model_path, map_location="cpu", weights_only=False)
+    if isinstance(payload, dict) and "state_dict" in payload:
+        payload = payload["state_dict"]
+    if not isinstance(payload, dict):
+        raise ValueError(f"Adaptive-Blend checkpoint is not a state dictionary: {model_path}")
+    state = {key.removeprefix("module."): value for key, value in payload.items()}
+    model = module.ResNet18(num_classes=10)
+    model.load_state_dict(state, strict=True)
+    wrapped = NormalizedClassifier(model).to(device).eval()
+    for parameter in wrapped.parameters():
+        parameter.requires_grad_(False)
+    return wrapped, {
+        "model_name": "backdoor_toolbox.ResNet18",
+        "num_classes": 10,
+        "model_path": str(Path(model_path).resolve()),
+        "source": "official backdoor-toolbox",
+    }

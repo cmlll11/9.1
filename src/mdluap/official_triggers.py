@@ -8,8 +8,10 @@ input-dependent trigger with a hand-written patch.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
+import sys
 
 import numpy as np
 import torch
@@ -19,7 +21,7 @@ from torch import nn
 
 
 class InputAwareGenerator(nn.Sequential):
-    """The generator architecture used by BackdoorBench InputAware."""
+    """Legacy fallback architecture kept for reading older local artifacts."""
 
     def __init__(self, input_channels: int = 3, output_channels: int | None = None):
         super().__init__()
@@ -141,12 +143,21 @@ class InputAwareTrigger(TriggerAdapter):
         self.generator = generator.eval()
         self.mask = mask.eval()
         self.threshold = threshold.eval()
+        self.registered_mean = torch.tensor((0.4914, 0.4822, 0.4465)).view(1, 3, 1, 1)
+        self.registered_std = torch.tensor((0.247, 0.243, 0.261)).view(1, 3, 1, 1)
 
     @torch.no_grad()
     def apply(self, images: torch.Tensor, *, sample_indices: list[int], split: str) -> torch.Tensor:
-        pattern = self.generator(images)
-        mask = self.threshold(self.mask(images))
-        return (images + (pattern - images) * mask).clamp(0.0, 1.0)
+        # BackdoorBench trains Input-Aware on normalized CIFAR-10 tensors.
+        # Convert raw [0,1] inputs to that space, reproduce the official
+        # pattern/mask composition, and convert the result back to raw pixels.
+        mean = self.registered_mean.to(device=images.device, dtype=images.dtype)
+        std = self.registered_std.to(device=images.device, dtype=images.dtype)
+        normalized = (images - mean) / std
+        pattern = self.generator(normalized)
+        pattern = (pattern - mean) / std
+        mask = self.threshold(self.mask(normalized))
+        return ((normalized + (pattern - normalized) * mask) * std + mean).clamp(0.0, 1.0)
 
 
 class SSBAArrayTrigger(TriggerAdapter):
@@ -186,6 +197,22 @@ def _load_wanet(path: Path, device: torch.device, *, s: float, grid_rescale: flo
     return WaNetTrigger(status, identity, noise, s=s, grid_rescale=grid_rescale)
 
 
+def _load_wanet_pair(
+    identity_path: Path,
+    noise_path: Path,
+    device: torch.device,
+    *,
+    s: float,
+    grid_rescale: float,
+) -> TriggerAdapter:
+    """Load the two grid files written by the official WaNet attack."""
+
+    identity = torch.load(identity_path, map_location=device, weights_only=False).to(device=device, dtype=torch.float32)
+    noise = torch.load(noise_path, map_location=device, weights_only=False).to(device=device, dtype=torch.float32)
+    status = TriggerStatus("wanet", f"{identity_path};{noise_path}", True)
+    return WaNetTrigger(status, identity, noise, s=s, grid_rescale=grid_rescale)
+
+
 def _find_first(root: Path, names: tuple[str, ...]) -> Path | None:
     if not root.exists():
         return None
@@ -214,16 +241,32 @@ def _group_seed_root(model_root: Path, group: str) -> Path:
     return model_root / group / "seed0"
 
 
-def _load_inputaware(path: Path, device: torch.device) -> TriggerAdapter:
+def _load_inputaware(path: Path, device: torch.device, backdoorbench_root: Path) -> TriggerAdapter:
     artifact: Any = torch.load(path, map_location=device, weights_only=False)
     if "best_trigger" in artifact:
         artifact = artifact["best_trigger"]
-    generator = InputAwareGenerator().to(device)
-    mask = InputAwareGenerator(output_channels=1).to(device)
-    generator.load_state_dict(artifact["generator"])
-    mask.load_state_dict(artifact["mask"])
+
+    # Prefer the exact official BackdoorBench classes.  They contain the
+    # DownSampleBlock/UpSampleBlock structure used by attack/inputaware.py and
+    # therefore match netCGM.pt without reimplementing the architecture.
+    root = str(backdoorbench_root.resolve())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from attack.inputaware import InputAwareGenerator as OfficialGenerator
+    from attack.inputaware import Threshold as OfficialThreshold
+
+    official_args = SimpleNamespace(dataset="cifar10", input_channel=3)
+    generator = OfficialGenerator(official_args).to(device)
+    mask = OfficialGenerator(official_args, out_channels=1).to(device)
+    generator_state = artifact.get("generator", artifact.get("netG"))
+    mask_state = artifact.get("mask", artifact.get("netM"))
+    if generator_state is None or mask_state is None:
+        raise ValueError("Input-Aware state must contain generator/mask or netG/netM")
+    generator.load_state_dict({key.removeprefix("module."): value for key, value in generator_state.items()})
+    mask.load_state_dict({key.removeprefix("module."): value for key, value in mask_state.items()})
+    threshold = OfficialThreshold().to(device)
     status = TriggerStatus("inputaware", str(path), True)
-    return InputAwareTrigger(status, generator, mask, InputAwareThreshold().to(device))
+    return InputAwareTrigger(status, generator, mask, threshold)
 
 
 def build_trigger_adapters(
@@ -257,24 +300,38 @@ def build_trigger_adapters(
         adapters["blended"] = UnavailableTrigger(TriggerStatus("blended", str(blended_path), False, "official Blended test trigger missing"))
 
     wanet_path = explicit.get("wanet") or model_root / "wanet" / "seed0" / "state_dict.pt"
-    if not wanet_path.is_file() and record_root is not None:
+    wanet_identity_path = model_root / "wanet" / "seed0" / "state_identity_grid.pt"
+    wanet_noise_path = model_root / "wanet" / "seed0" / "state_noise_grid.pt"
+    if not wanet_path.is_file() and wanet_identity_path.is_file() and wanet_noise_path.is_file():
+        try:
+            adapters["wanet"] = _load_wanet_pair(
+                wanet_identity_path, wanet_noise_path, device, s=wanet_s, grid_rescale=wanet_grid_rescale
+            )
+        except Exception as exc:
+            adapters["wanet"] = UnavailableTrigger(TriggerStatus("wanet", str(wanet_identity_path), False, str(exc)))
+        wanet_path = None
+    if "wanet" not in adapters and wanet_path is not None and not wanet_path.is_file() and record_root is not None:
         wanet_path = _find_first(record_root, ("mdl_uap_hard_wanet_seed0/state_dict.pt", "mdl_uap_wanet_seed0/state_dict.pt")) or wanet_path
-    if wanet_path and wanet_path.is_file():
+    if "wanet" not in adapters and wanet_path and wanet_path.is_file():
         try:
             adapters["wanet"] = _load_wanet(wanet_path, device, s=wanet_s, grid_rescale=wanet_grid_rescale)
         except Exception as exc:
             adapters["wanet"] = UnavailableTrigger(TriggerStatus("wanet", str(wanet_path), False, str(exc)))
-    else:
+    elif "wanet" not in adapters:
         adapters["wanet"] = UnavailableTrigger(TriggerStatus("wanet", str(wanet_path), False, "WaNet test-time grid state missing"))
 
     ssba_path = explicit.get("ssba")
     if ssba_path is None:
-        ssba_path = _find_first(_group_seed_root(model_root, "ssba"), ("test.npy", "ssba_test.npy", "cifar100_ssba_test.npy"))
+        # The official SSBA replacement array is sample-specific.  A
+        # CIFAR-10 test array cannot be indexed with CIFAR-100 indices, so
+        # only an explicitly named CIFAR-100 array is eligible here.
+        ssba_path = _find_first(
+            _group_seed_root(model_root, "ssba"),
+            ("cifar100_ssba_test.npy", "ssba_cifar100_test.npy"),
+        )
     if ssba_path is None and record_root is not None:
         ssba_path = _find_first(record_root, (
             "mdl_uap_hard_ssba_seed0/cifar100_ssba_test.npy",
-            "mdl_uap_hard_ssba_seed0/ssba_test.npy",
-            "mdl_uap_hard_ssba_seed0/test_replace_imgs.npy",
         ))
     if ssba_path and ssba_path.is_file():
         try:
@@ -284,7 +341,10 @@ def build_trigger_adapters(
     else:
         adapters["ssba"] = UnavailableTrigger(TriggerStatus("ssba", str(ssba_path), False, "official SSBA CIFAR-100 test-time array missing"))
 
-    inputaware_path = explicit.get("inputaware") or _find_first(_group_seed_root(model_root, "inputaware"), ("trigger_state.pt", "inputaware_trigger_state.pt"))
+    inputaware_path = explicit.get("inputaware") or _find_first(
+        _group_seed_root(model_root, "inputaware"),
+        ("trigger_state.pt", "inputaware_trigger_state.pt", "netCGM.pt"),
+    )
     if inputaware_path is None and record_root is not None:
         inputaware_path = _find_first(record_root, (
             "mdl_uap_hard_inputaware_seed0/trigger_state.pt",
@@ -292,7 +352,7 @@ def build_trigger_adapters(
         ))
     if inputaware_path and inputaware_path.is_file():
         try:
-            adapters["inputaware"] = _load_inputaware(inputaware_path, device)
+            adapters["inputaware"] = _load_inputaware(inputaware_path, device, backdoorbench_root)
         except Exception as exc:
             adapters["inputaware"] = UnavailableTrigger(TriggerStatus("inputaware", str(inputaware_path), False, str(exc)))
     else:

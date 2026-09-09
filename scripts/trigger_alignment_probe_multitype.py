@@ -30,6 +30,7 @@ from mdluap.data import cifar100_dataset
 from mdluap.official_triggers import TriggerAdapter, build_trigger_adapters
 from mdluap.probes import FEATURE_NAMES, RidgeProbe, logits_features, spearman_correlation
 from mdluap.targeted_pgd import targeted_pgd, targeted_pgd_endpoint
+from mdluap.models import load_backdoor_toolbox_resnet18
 from pilot_common import batch_images, load_model, timestamp_run_dir, write_csv, write_json
 
 
@@ -83,6 +84,28 @@ def checkpoint_path(model_root: Path, group: str, seed: int) -> Path:
         if path.is_file():
             return path
     return model_root / group / f"seed{seed}" / "attack_result.pt"
+
+
+def load_stage_model(
+    model_root: Path,
+    group: str,
+    seed: int,
+    *,
+    backdoorbench_root: Path,
+    device: torch.device,
+    adaptive_blend_root: Path | None,
+    adaptive_blend_model_path: Path | None,
+):
+    """Load either a BackdoorBench model or the official Adaptive-Blend model."""
+
+    if group == "adaptive_blend":
+        path = adaptive_blend_model_path or model_root / group / f"seed{seed}" / "official_model.pt"
+        if adaptive_blend_root is None:
+            raise ValueError("--adaptive-blend-root is required for Adaptive-Blend")
+        return load_backdoor_toolbox_resnet18(
+            str(path), backdoor_toolbox_root=str(adaptive_blend_root), device=device
+        )
+    return load_model(checkpoint_path(model_root, group, seed), str(backdoorbench_root), device)
 
 
 def write_log(output: Path, message: str) -> None:
@@ -283,6 +306,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--model-root", required=True)
     parser.add_argument("--backdoorbench-root", required=True)
+    parser.add_argument("--adaptive-blend-root", default=None)
+    parser.add_argument("--adaptive-blend-model-path", default=None)
     parser.add_argument("--record-root", default=None)
     parser.add_argument("--output-root", default="results/stage1d_trigger_alignment")
     parser.add_argument("--clean-group", default="clean_select_shared")
@@ -336,6 +361,8 @@ def main() -> None:
     model_root = Path(args.model_root)
     backdoorbench_root = Path(args.backdoorbench_root)
     record_root = Path(args.record_root) if args.record_root else None
+    adaptive_blend_root = Path(args.adaptive_blend_root) if args.adaptive_blend_root else None
+    adaptive_blend_model_path = Path(args.adaptive_blend_model_path) if args.adaptive_blend_model_path else None
     train_data = cifar100_dataset(data_root, train=True)
     test_data = cifar100_dataset(data_root, train=False)
     train_indices = select_pool(train_data, args.probe_pool_count, args.candidate_seed + 11)
@@ -394,7 +421,10 @@ def main() -> None:
         "target": 0,
     })
 
-    clean0, _ = load_model(checkpoint_path(model_root, args.clean_group, 0), str(backdoorbench_root), device)
+    clean0, _ = load_stage_model(
+        model_root, args.clean_group, 0, backdoorbench_root=backdoorbench_root,
+        device=device, adaptive_blend_root=None, adaptive_blend_model_path=None,
+    )
     test_logits, test_features, test_predictions = logits_and_features(clean0, test_data, test_indices, batch_size=args.batch_size, device=device)
     predicted_radius = probe.predict(test_features)
     eligible = test_predictions != 0
@@ -439,8 +469,16 @@ def main() -> None:
     model_cache = {"clean": clean0}
     model_group_paths = {"clean": checkpoint_path(model_root, args.clean_group, 0)}
     for group in backdoor_groups:
-        model_cache[group], _ = load_model(checkpoint_path(model_root, group, 0), str(backdoorbench_root), device)
-        model_group_paths[group] = checkpoint_path(model_root, group, 0)
+        model_cache[group], _ = load_stage_model(
+            model_root, group, 0, backdoorbench_root=backdoorbench_root,
+            device=device, adaptive_blend_root=adaptive_blend_root,
+            adaptive_blend_model_path=adaptive_blend_model_path,
+        )
+        model_group_paths[group] = (
+            adaptive_blend_model_path or model_root / group / "seed0" / "official_model.pt"
+            if group == "adaptive_blend"
+            else checkpoint_path(model_root, group, 0)
+        )
 
     for trigger_type in backdoor_groups:
         adapter = adapters[trigger_type]
