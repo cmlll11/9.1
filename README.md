@@ -132,25 +132,26 @@ An existing model-gate report can optionally be supplied through
 ASR values are copied into `model_quality.csv` without adding trigger logic to
 the untargeted experiment.
 
-## Stage 1D targeted-robust trigger alignment mechanism experiment
+## Stage 1D CIFAR-100 Probe multi-backdoor trigger alignment
 
-Stage 1D independently selects targeted-robust CIFAR-100 samples using Clean
-seed 0 (coarse Top-300 followed by refined Top-100), then evaluates the same
-sample set on Clean seed 0 and the seed-0 BadNet, LF, Blended, and WaNet
-models. Each model uses its own training-time trigger: the official BadNet
-patch, LF pattern, Blended image with test alpha 0.2, or the exact WaNet grids
-saved in `state_dict.pt`. Clean uses the BadNet patch as a fixed trigger
-control. The experiment compares the penultimate `avgpool` feature change
-caused by each trigger with the feature change caused by targeted PGD to class
-0. The analysis uses
-the first-success endpoint on the `0.5, 1, 1.5, 2, 3, 4 / 255` grid and also
-reports fixed `1, 1.5, 2 / 255` endpoints, trigger/adversarial direction
-concentration, and a shuffled-trigger control.
+Stage 1D trains a target-0 Ridge Probe from CIFAR-100 train images evaluated
+by Clean seeds 1--3. Clean seed 0 applies the frozen Probe to a disjoint
+CIFAR-100 test pool and selects the shared Top-100 images; no Clean0 full-pool
+Oracle or refined-PGD reference is run. The same images are evaluated on
+Clean0 and seed-0 BadNet, Blended, WaNet, SSBA, Input-Aware, and Adaptive-Blend
+models using targeted PGD to CIFAR-10 class 0.
 
-This is a mechanism experiment with a known target, not a deployment detector.
-It requires seed-0 checkpoints for the Clean, BadNet, LF, Blended, and WaNet
-groups, the official BadNet/LF/Blended resources, and the WaNet seed-0
-`state_dict.pt` containing `identity_grid` and `noise_grid`.
+Each trigger type uses its own official test-time transform. BadNet, Blended,
+WaNet, SSBA, and Input-Aware use their corresponding BackdoorBench assets or
+saved states. Adaptive-Blend requires its official backdoor-toolbox trigger
+and configuration. If an official transform cannot generate a trigger for the
+CIFAR-100 test image, PGD records are retained but trigger alignment is
+marked unavailable; no synthetic fallback trigger is used.
+
+The experiment reports trigger activation on the selected images, separate
+Clean control alignment for every trigger type, first-success targeted PGD
+radius, fixed low-budget endpoints, direction concentration, and a
+shuffled-trigger control.
 
 Run it on the GPU server with:
 
