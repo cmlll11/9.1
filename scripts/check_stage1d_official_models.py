@@ -16,7 +16,7 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from mdluap.data import cifar10_dataset
-from mdluap.models import load_attack_result_model, load_backdoor_toolbox_resnet18
+from mdluap.models import load_model_checkpoint, load_backdoor_toolbox_resnet18
 
 
 def load_official_datasets(result_path: Path, root: Path):
@@ -64,6 +64,10 @@ def accuracy(model, dataset, *, device: torch.device) -> float:
 
 
 def result_path(model_root: Path, group: str, seed: int) -> Path:
+    if group == "clean_select_shared":
+        clean_path = model_root / group / f"seed{seed}" / "clean_model.pth"
+        if clean_path.is_file():
+            return clean_path
     return model_root / group / f"seed{seed}" / "attack_result.pt"
 
 
@@ -97,7 +101,7 @@ def main() -> None:
     clean_wrappers = {}
     for seed in parse_csv(args.clean_seeds):
         path = result_path(model_root, args.clean_group, seed)
-        wrapper, metadata = load_attack_result_model(str(path), backdoorbench_root=str(bdb_root), device=device)
+        wrapper, metadata = load_model_checkpoint(str(path), backdoorbench_root=str(bdb_root), device=device)
         clean_wrappers[seed] = wrapper
         clean_acc = accuracy(wrapper, clean_test, device=device)
         rows[f"{args.clean_group}_seed{seed}"] = {

@@ -68,13 +68,13 @@ resolve_checkpoint() {
 }
 
 for seed in 1 2 3; do
-    checkpoint="${MODEL_ROOT}/${CLEAN_GROUP:-clean_select_shared}/seed${seed}/attack_result.pt"
+    checkpoint="${MODEL_ROOT}/${CLEAN_GROUP:-clean_select_shared}/seed${seed}/clean_model.pth"
     if [[ ! -f "${checkpoint}" ]]; then
         echo "ERROR: Probe reference checkpoint not found: ${checkpoint}" >&2
         exit 1
     fi
 done
-if [[ ! -f "${MODEL_ROOT}/${CLEAN_GROUP:-clean_select_shared}/seed0/attack_result.pt" ]]; then
+if [[ ! -f "${MODEL_ROOT}/${CLEAN_GROUP:-clean_select_shared}/seed0/clean_model.pth" ]]; then
     echo "ERROR: Clean seed0 checkpoint not found" >&2
     exit 1
 fi

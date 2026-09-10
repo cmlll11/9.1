@@ -72,11 +72,24 @@ copy_backdoorbench_result() {
     fi
 }
 
+copy_clean_result() {
+    local seed="$1" run="$2"
+    local source="${BACKDOORBENCH_ROOT}/record/${run}/clean_model.pth"
+    local destination="${MODEL_ROOT}/clean_select_shared/seed${seed}"
+    if [[ ! -f "${source}" ]]; then
+        echo "ERROR: official Clean attack did not create ${source}" >&2
+        exit 1
+    fi
+    mkdir -p "${destination}"
+    cp "${source}" "${destination}/clean_model.pth"
+    cp -f "${BACKDOORBENCH_ROOT}/record/${run}/info.pickle" "${destination}/" 2>/dev/null || true
+}
+
 train_clean() {
     local seed="$1" run
     run="$(run_name clean "${seed}")"
-    if [[ -f "${MODEL_ROOT}/clean_select_shared/seed${seed}/attack_result.pt" ]]; then
-        echo "Skip existing Clean model: ${MODEL_ROOT}/clean_select_shared/seed${seed}/attack_result.pt"
+    if [[ -f "${MODEL_ROOT}/clean_select_shared/seed${seed}/clean_model.pth" ]]; then
+        echo "Skip existing Clean model: ${MODEL_ROOT}/clean_select_shared/seed${seed}/clean_model.pth"
         return
     fi
     echo "Training official Clean model: seed=${seed}, epochs=${EPOCHS}"
@@ -91,7 +104,7 @@ train_clean() {
             --frequency_save 0 \
             --device cuda:0
     ) 2>&1 | tee "${REPO_ROOT}/outputs/stage1d_training/${run}.log"
-    copy_backdoorbench_result clean_select_shared "${seed}" "${run}"
+    copy_clean_result "${seed}" "${run}"
 }
 
 train_backdoorbench() {

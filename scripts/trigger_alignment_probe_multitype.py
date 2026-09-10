@@ -75,6 +75,10 @@ def parse_float_list(value: str) -> tuple[float, ...]:
 
 
 def checkpoint_path(model_root: Path, group: str, seed: int) -> Path:
+    if group == "clean_select_shared":
+        clean_path = model_root / group / f"seed{seed}" / "clean_model.pth"
+        if clean_path.is_file():
+            return clean_path
     aliases = {
         "inputaware": ("inputaware", "input_aware", "input-aware"),
         "adaptive_blend": ("adaptive_blend", "adaptive-blend", "adaptiveblend", "adap_blend"),

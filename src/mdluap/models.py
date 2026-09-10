@@ -65,6 +65,56 @@ def load_attack_result_model(
     return wrapped, result
 
 
+def load_clean_model(
+    result_path: str,
+    *,
+    backdoorbench_root: str,
+    device: torch.device,
+) -> tuple[NormalizedClassifier, dict]:
+    """Load the official BackdoorBench ``clean_model.pth`` state dictionary."""
+
+    state = torch.load(result_path, map_location="cpu", weights_only=False)
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    if not isinstance(state, dict):
+        raise ValueError(f"Clean checkpoint is not a state dictionary: {result_path}")
+
+    factory = _backdoorbench_model_factory(backdoorbench_root)
+    model = factory("preactresnet18", 10, image_size=32)
+    state = {key.removeprefix("module."): value for key, value in state.items()}
+    model.load_state_dict(state, strict=True)
+    wrapped = NormalizedClassifier(model).to(device).eval()
+    for parameter in wrapped.parameters():
+        parameter.requires_grad_(False)
+    return wrapped, {
+        "model_name": "preactresnet18",
+        "num_classes": 10,
+        "checkpoint_format": "clean_model.pth",
+        "checkpoint_path": str(Path(result_path).resolve()),
+    }
+
+
+def load_model_checkpoint(
+    result_path: str,
+    *,
+    backdoorbench_root: str,
+    device: torch.device,
+) -> tuple[NormalizedClassifier, dict]:
+    """Load either an official Clean or BackdoorBench attack checkpoint."""
+
+    if Path(result_path).name == "clean_model.pth":
+        return load_clean_model(
+            result_path,
+            backdoorbench_root=backdoorbench_root,
+            device=device,
+        )
+    return load_attack_result_model(
+        result_path,
+        backdoorbench_root=backdoorbench_root,
+        device=device,
+    )
+
+
 def load_backdoor_toolbox_resnet18(
     model_path: str,
     *,

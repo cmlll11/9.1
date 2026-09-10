@@ -12,7 +12,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from mdluap.models import load_attack_result_model
+from mdluap.models import load_model_checkpoint
 
 
 def seed_everything(seed: int) -> None:
@@ -72,7 +72,7 @@ def load_model(path: str | Path, backdoorbench_root: str, device: torch.device):
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"checkpoint not found: {path}")
-    return load_attack_result_model(str(path), backdoorbench_root=backdoorbench_root, device=device)
+    return load_model_checkpoint(str(path), backdoorbench_root=backdoorbench_root, device=device)
 
 
 def batch_images(dataset: Dataset, indices: list[int], *, batch_size: int, device: torch.device):
@@ -112,4 +112,3 @@ def load_partition_indices(partition_root: str | Path, partition: str = "shared"
     if not isinstance(indices, list) or not indices:
         raise ValueError(f"partition metadata has no indices: {metadata}")
     return [int(index) for index in indices]
-
