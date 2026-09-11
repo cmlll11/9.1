@@ -19,6 +19,48 @@ UNTARGETED_FEATURE_NAMES = tuple(
 )
 
 
+def target_feature_names(target: int, num_classes: int = 10) -> tuple[str, ...]:
+    """Return the 11-feature schema for one target class.
+
+    The first nine entries are the logit gaps ``z_k-z_target`` for all
+    non-target classes in ascending class-id order.  The target itself is not
+    included because that column would be identically zero.
+    """
+
+    target = int(target)
+    num_classes = int(num_classes)
+    if num_classes < 2 or not 0 <= target < num_classes:
+        raise ValueError("target must be a valid class and num_classes must be at least 2")
+    return tuple(
+        [f"logit_gap_class_{index}_vs_target_{target}" for index in range(num_classes) if index != target]
+        + ["top1_top2_margin", "entropy"]
+    )
+
+
+def target_conditioned_logits_features(logits: Tensor, target: int) -> Tensor:
+    """Extract target-relative logits features for any valid target class.
+
+    The nine non-target columns are ``z_k - z_target`` in ascending class-id
+    order.  The final two values are the global top-1/top-2 margin and
+    softmax entropy.
+    """
+
+    if logits.ndim != 2 or logits.shape[1] < 2:
+        raise ValueError(f"expected logits with shape [N, K] and K >= 2, got {tuple(logits.shape)}")
+    target = int(target)
+    if target < 0 or target >= logits.shape[1]:
+        raise ValueError(f"target {target} is outside logits dimension {logits.shape[1]}")
+    gaps = torch.cat(
+        [logits[:, index : index + 1] - logits[:, target : target + 1]
+         for index in range(logits.shape[1]) if index != target],
+        dim=1,
+    )
+    top2 = logits.topk(k=2, dim=1).values
+    probabilities = logits.softmax(dim=1)
+    entropy = -(probabilities.clamp_min(1e-12) * probabilities.clamp_min(1e-12).log()).sum(dim=1, keepdim=True)
+    return torch.cat((gaps, (top2[:, 0] - top2[:, 1]).unsqueeze(1), entropy), dim=1)
+
+
 def target_margin(logits: Tensor, target: int) -> Tensor:
     """Return ``max(non-target logits) - target logit`` for each sample."""
 
