@@ -1,0 +1,15 @@
+{
+  "fingerprint_length": 100,
+  "image_resolution": 32,
+  "image_channels": 3,
+  "encode_method": "bch",
+  "secret": "stage1d",
+  "seed": 0,
+  "batch_size": 32,
+  "identical_fingerprints": true,
+  "use_residual": 0,
+  "use_modulated": 0,
+  "fc_layers": 0,
+  "fused_conv": 0,
+  "quantize_uint8": true
+}

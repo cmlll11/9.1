@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import importlib.util
+import os
 from pathlib import Path
 
 import torch
@@ -27,6 +28,42 @@ class NormalizedClassifier(nn.Module):
         """Classify raw [0, 1] images with the training-time normalization."""
 
         return self.model((raw_images - self.mean) / self.std)
+
+
+def load_modelzoo_classifier(
+    alias: str,
+    *,
+    model_zoo_root: str,
+    device: torch.device,
+) -> tuple[NormalizedClassifier, dict]:
+    """Load one registered model through the public Model Zoo API.
+
+    Model Zoo checkpoints are stored as models that consume normalized CIFAR-10
+    tensors.  The experiment itself uses raw ``[0, 1]`` image tensors, so the
+    normalization boundary is kept here rather than duplicated by callers.
+    """
+
+    try:
+        from modelzoo import get_model_info, load_model
+    except ImportError as exc:  # pragma: no cover - exercised on the server
+        raise ImportError(
+            "The shared Model Zoo package is required. Install it with "
+            "pip install -e /path/to/backdoor-model-zoo and set MODEL_ZOO_ROOT."
+        ) from exc
+
+    # Model Zoo 0.1.0 resolves registry metadata from MODEL_ZOO_ROOT and
+    # exposes get_model_info(alias) without a root keyword.  Keep a fallback
+    # for newer releases that accept root explicitly.
+    os.environ["MODEL_ZOO_ROOT"] = str(Path(model_zoo_root).expanduser())
+    try:
+        info = get_model_info(alias)
+    except TypeError:
+        info = get_model_info(alias, root=model_zoo_root)
+    model = load_model(alias, device=device, root=model_zoo_root)
+    wrapped = NormalizedClassifier(model).to(device).eval()
+    for parameter in wrapped.parameters():
+        parameter.requires_grad_(False)
+    return wrapped, info
 
 
 def _backdoorbench_model_factory(backdoorbench_root: str):

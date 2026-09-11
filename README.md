@@ -132,61 +132,75 @@ An existing model-gate report can optionally be supplied through
 ASR values are copied into `model_quality.csv` without adding trigger logic to
 the untargeted experiment.
 
-## Stage 1D CIFAR-100 Probe multi-backdoor trigger alignment
+## Stage WT wrong-target targeted-PGD pilot
 
-Stage 1D trains a target-0 Ridge Probe from CIFAR-100 train images evaluated
-by Clean seeds 1--3. Clean seed 0 applies the frozen Probe to a disjoint
-CIFAR-100 test pool and selects the shared Top-100 images; no Clean0 full-pool
-Oracle or refined-PGD reference is run. The same images are evaluated on
-Clean0 and seed-0 BadNet, Blended, WaNet, SSBA, Input-Aware, and Adaptive-Blend
-models using targeted PGD to CIFAR-10 class 0.
+Stage WT tests whether a target-specific targeted attack still separates Clean
+and BadNet models when the real BadNet target is unknown.  The default targets
+are `0,1,3,7`: target 0 is the known-target positive control and 1, 3, and 7
+are fixed wrong-target pilot cases.  Clean seeds 3 and 4 fit one
+target-specific Ridge Probe per target on CIFAR-100 train images.  Clean and
+BadNet seeds 0--2 independently select Probe Top-100, target-margin Top-100,
+and Random-100 samples from their own eligible CIFAR-100 test pools, where
+the original prediction is not already the selected target.
 
-Each trigger type uses its own official test-time transform. BadNet, Blended,
-WaNet, SSBA, and Input-Aware use their corresponding BackdoorBench assets or
-saved states. Adaptive-Blend requires its official backdoor-toolbox trigger
-and configuration. If an official transform cannot generate a trigger for the
-CIFAR-100 test image, PGD records are retained but trigger alignment is
-marked unavailable; no synthetic fallback trigger is used.
-
-The experiment reports trigger activation on the selected images, separate
-Clean control alignment for every trigger type, first-success targeted PGD
-radius, fixed low-budget endpoints, direction concentration, and a
-shuffled-trigger control.
+The targeted-PGD evaluation uses 100 steps, three random restarts, and the
+`0.5, 1, 1.5, 2, 3, 4 / 255` grid.  Results include deployment-style records,
+the Clean-Probe paired diagnostic, small-budget ASR gaps, and the fixed
+random baseline under `results/stage_wt_wrong_target/`.
 
 Run it on the GPU server with:
 
 ```bash
-cd /path/to/9.1
+cd /path/to/9.1-random-target
 PYTHON_BIN=/home/cml/.conda/envs/mdl-uap/bin/python \
 DATA_ROOT=/home/cml/8.11/data \
 MODEL_ROOT=/home/cml/8.11/artifacts/models/hard_sample_gap \
+BACKDOORBENCH_ROOT=/path/to/9.1-random-target/third_party/BackdoorBench \
 QUALITY_REPORT=/home/cml/8.11/reports/hard_sample_gap_model_gates.json \
 BATCH_SIZE=64 \
 GPU_ID=0 \
-bash bash/run_stage1d_trigger_alignment.sh
+bash bash/run_probe_cifar100_wrong_target.sh
 ```
 
-Results are written to a unique directory under
-`results/stage1d_trigger_alignment/`.
+Set `TARGETS=0,1,3,7` for the pilot.  After the pilot, set
+`TARGETS=0,1,2,3,4,5,6,7,8,9` to estimate the fraction of effective wrong
+targets on CIFAR-10.
 
-Before Stage 1D, retrain the models with the official implementations on the
-complete CIFAR-10 training split:
+## Stage 1D-WT Model Zoo trigger-direction mechanism
+
+The mechanism experiment does not load raw checkpoints.  It loads the
+registered aliases `clean0`--`clean3`, `badnet0`, `blended0`, `wanet0`,
+`inputaware0`, `ssba0`, and `adaptive_blend01` from the shared Model Zoo.
+Configure the Model Zoo package and root first:
 
 ```bash
-cd /path/to/9.1
-PYTHON_BIN=/home/cml/.conda/envs/mdl-uap/bin/python \
-DATA_ROOT=/home/cml/8.11/data \
-MODEL_ROOT=/home/cml/8.11/artifacts/models/stage1d_official \
-BACKDOORBENCH_ROOT=/home/cml/9.1/third_party/BackdoorBench \
-ADAPTIVE_BLEND_ROOT=/path/to/backdoor-toolbox \
-ADAPTIVE_BLEND_MODEL_PATH=/path/to/backdoor-toolbox/models/.../model.pt \
-GPU_ID=1 \
-bash bash/run_stage1d_train_official.sh
+pip install -e /home/cml/backdoor-model-zoo
+export MODEL_ZOO_ROOT=/home/cml/model_zoo
 ```
 
-The training launcher uses the official BackdoorBench YAML files for
-BadNet, Blended, WaNet, SSBA, and Input-Aware, and the official
-backdoor-toolbox commands for Adaptive-Blend. It uses target class 0 and
-100 epochs for the BackdoorBench classifiers. The existing quality gate is
-`clean accuracy >= 0.90`, `backdoor clean accuracy >= 0.90`, `native ASR >=
-0.90`, and `clean-trigger ASR <= 0.10`.
+Run the paired mechanism experiment on the server:
+
+```bash
+cd /home/cml/9.1-random-target
+tmux new -s stage1d-analysis
+PYTHON_BIN=/home/cml/.conda/envs/mdl-uap/bin/python \
+MODEL_ZOO_ROOT=/home/cml/model_zoo \
+DATA_ROOT=/home/cml/8.11/data \
+TRIGGER_ARTIFACT_ROOT=/home/cml/8.11/artifacts/models/stage1d_wt_official \
+BACKDOORBENCH_ROOT=/home/cml/9.1-random-target/third_party/BackdoorBench \
+GPU_ID=0 bash bash/run_stage1d_wt_alignment.sh
+```
+
+The experiment trains wrong-target Probes for targets 1, 3, and 7 using Clean
+seeds 1--3.  Clean0 selects one shared Top-100 per target.  Every model keeps
+that Top-100, but samples whose original prediction already equals the wrong
+target are marked `ineligible_original_target` and are never counted as PGD
+successes.  The paired control cohort is selected only from Backdoor-eligible
+samples whose official trigger reaches class 0; Clean uses the same images and
+the same trigger.
+
+Only 1/255 and 1.5/255 are used for PGD.  Shared-trigger attacks use trigger
+prototype/concentration metrics; SSBA and Input-Aware additionally use
+same-vs-shuffle metrics.  SSBA PGD continues even when its exact encoder
+provenance check is unavailable; only SSBA alignment is marked unavailable.
+Results are written under `results/stage1d_wrong_target_trigger_alignment/`.
