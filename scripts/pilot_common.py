@@ -12,9 +12,6 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from mdluap.models import load_model_checkpoint
-
-
 def seed_everything(seed: int) -> None:
     """Set Python, NumPy and Torch seeds used by deterministic selection/attacks."""
 
@@ -68,6 +65,10 @@ def write_csv(path: str | Path, rows: list[dict]) -> None:
 
 def load_model(path: str | Path, backdoorbench_root: str, device: torch.device):
     """Load a frozen normalized BackdoorBench classifier with an existence check."""
+
+    # Keep the legacy BackdoorBench loader available to the old pilot scripts
+    # without importing it from the Model Zoo experiment entrypoint.
+    from mdluap.models import load_model_checkpoint
 
     path = Path(path)
     if not path.is_file():

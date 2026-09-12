@@ -19,6 +19,7 @@ SSBA_REFERENCE_TEST_ARRAY="${SSBA_REFERENCE_TEST_ARRAY:-}"
 SSBA_CHECK_BATCH_SIZE="${SSBA_CHECK_BATCH_SIZE:-32}"
 INPUTAWARE_STATE_PATH="${INPUTAWARE_STATE_PATH:-${TRIGGER_ARTIFACT_ROOT}/inputaware/seed0/netCGM.pt}"
 ADAPTIVE_BLEND_TRIGGER_PATH="${ADAPTIVE_BLEND_TRIGGER_PATH:-${HOME}/backdoor-toolbox/triggers/hellokitty_32.png}"
+ATTACK_SEED="${ATTACK_SEED:-2031}"
 GPU_ID="${GPU_ID:-0}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/results/stage1d_wrong_target_trigger_alignment}"
@@ -27,6 +28,13 @@ export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 [[ -x "${PYTHON_BIN}" ]] || { echo "ERROR: Python not executable: ${PYTHON_BIN}" >&2; exit 1; }
 [[ -d "${DATA_ROOT}/cifar100" ]] || { echo "ERROR: CIFAR-100 directory missing: ${DATA_ROOT}/cifar100" >&2; exit 1; }
 [[ -n "${MODEL_ZOO_ROOT}" && -d "${MODEL_ZOO_ROOT}" ]] || { echo "ERROR: MODEL_ZOO_ROOT is not configured or missing" >&2; exit 1; }
+[[ -d "${BACKDOORBENCH_ROOT}" ]] || { echo "ERROR: BackdoorBench root missing: ${BACKDOORBENCH_ROOT}" >&2; exit 1; }
+[[ -f "${BACKDOORBENCH_ROOT}/resource/badnet/trigger_image.png" ]] || { echo "ERROR: BadNet trigger missing" >&2; exit 1; }
+[[ -f "${BACKDOORBENCH_ROOT}/resource/blended/hello_kitty.jpeg" ]] || { echo "ERROR: Blended trigger missing" >&2; exit 1; }
+[[ -f "${TRIGGER_ARTIFACT_ROOT}/wanet/seed0/state_dict.pt" ]] || { echo "ERROR: WaNet state_dict.pt missing under ${TRIGGER_ARTIFACT_ROOT}" >&2; exit 1; }
+[[ -f "${INPUTAWARE_STATE_PATH}" ]] || { echo "ERROR: Input-Aware netCGM.pt missing: ${INPUTAWARE_STATE_PATH}" >&2; exit 1; }
+[[ -f "${ADAPTIVE_BLEND_TRIGGER_PATH}" ]] || { echo "ERROR: Adaptive-Blend trigger missing: ${ADAPTIVE_BLEND_TRIGGER_PATH}" >&2; exit 1; }
+[[ -f "${SSBA_ENCODER_PATH}" && -f "${SSBA_CONFIG_PATH}" ]] || { echo "ERROR: SSBA encoder/config missing" >&2; exit 1; }
 "${PYTHON_BIN}" -c 'import torch; assert torch.cuda.is_available()' || { echo "ERROR: CUDA unavailable" >&2; exit 1; }
 
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
@@ -54,6 +62,7 @@ ARGS=(
     --inputaware-state-path "${INPUTAWARE_STATE_PATH}"
     --adaptive-blend-trigger-path "${ADAPTIVE_BLEND_TRIGGER_PATH}"
     --analysis-eps-pixels "1,1.5"
+    --attack-seed "${ATTACK_SEED}"
     --batch-size "${BATCH_SIZE}"
     --device cuda:0
 )

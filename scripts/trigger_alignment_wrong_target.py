@@ -38,7 +38,7 @@ from mdluap.models import load_modelzoo_classifier
 from mdluap.official_triggers import build_trigger_adapters
 from mdluap.probes import RidgeProbe, target_conditioned_logits_features, target_feature_names, target_margin
 from mdluap.targeted_pgd import targeted_pgd, targeted_pgd_endpoint
-from pilot_common import batch_images, timestamp_run_dir, write_csv, write_json
+from pilot_common import batch_images, seed_everything, timestamp_run_dir, write_csv, write_json
 
 
 TRAIN_EPS_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0, 16.0, 32.0)
@@ -131,19 +131,38 @@ def coarse_probe_labels(model, dataset, indices: list[int], *, target: int, eps_
 
     logits, _, _ = logits_and_features(model, dataset, indices, target=target, batch_size=batch_size, device=device)
     before = logits.argmax(dim=1).numpy()
-    # A sample already predicted as the attack target has a zero-radius
-    # targeted attack.  Reference labels retain this fact; only Clean0's
-    # final selection pool excludes such samples.
-    first = np.where(before == int(target), 0.0, np.inf).astype(np.float64)
+    eligible = before != int(target)
+    # Samples already predicted as the wrong target are not attack trials.
+    # They remain in the pool for provenance, but never become epsilon=0
+    # labels and never enter the Ridge fit.
+    first = np.full(len(indices), np.inf, dtype=np.float64)
     rows = []
     for eps in eps_pixels:
-        successes, predictions = [], []
+        successes = np.zeros(len(indices), dtype=bool)
+        predictions = np.full(len(indices), -1, dtype=np.int64)
+        offset = 0
         for _, images, _ in batch_images(dataset, indices, batch_size=batch_size, device=device):
-            result = targeted_pgd(model, images, target=target, epsilon=eps / 255.0, steps=steps,
-                                  alpha=eps / 255.0 / 10.0, random_start=False, restarts=1)
-            successes.extend(result.success.cpu().tolist())
-            predictions.extend(result.best_prediction.cpu().tolist())
+            local_count = len(images)
+            local_eligible = eligible[offset : offset + local_count]
+            if np.any(local_eligible):
+                mask = torch.as_tensor(local_eligible, device=images.device)
+                result = targeted_pgd(model, images[mask], target=target, epsilon=eps / 255.0, steps=steps,
+                                      alpha=eps / 255.0 / 10.0, random_start=False, restarts=1)
+                positions = np.flatnonzero(local_eligible)
+                successes[offset + positions] = result.success.cpu().numpy()
+                predictions[offset + positions] = result.best_prediction.cpu().numpy()
+            offset += local_count
         for pos, sample_index in enumerate(indices):
+            if not eligible[pos]:
+                rows.append({
+                    "phase": "probe_label", "reference_clean_seed": seed, "target": target,
+                    "sample_index": sample_index, "epsilon_pixels": eps,
+                    "before_prediction": int(before[pos]), "after_prediction": None,
+                    "eligible": False, "pgd_status": "ineligible_original_target", "success": None,
+                    "robustness_radius_pixels": None, "censored": None, "steps": steps,
+                    "random_start": False, "restarts": 1,
+                })
+                continue
             success = bool(successes[pos])
             if success and not math.isfinite(first[pos]):
                 first[pos] = eps
@@ -151,7 +170,8 @@ def coarse_probe_labels(model, dataset, indices: list[int], *, target: int, eps_
                 "phase": "probe_label", "reference_clean_seed": seed, "target": target,
                 "sample_index": sample_index, "epsilon_pixels": eps,
                 "before_prediction": int(before[pos]), "after_prediction": int(predictions[pos]),
-                "success": success, "robustness_radius_pixels": None if not math.isfinite(first[pos]) else float(first[pos]),
+                "eligible": True, "pgd_status": "success" if success else "failure", "success": success,
+                "robustness_radius_pixels": None if not math.isfinite(first[pos]) else float(first[pos]),
                 "censored": not math.isfinite(first[pos]), "steps": steps, "random_start": False, "restarts": 1,
             })
     return first, rows
@@ -286,6 +306,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wanet-s", type=float, default=0.5)
     parser.add_argument("--wanet-grid-rescale", type=float, default=1.0)
     parser.add_argument("--shuffle-repeats", type=int, default=20)
+    parser.add_argument("--attack-seed", type=int, default=2031)
     parser.add_argument("--device", default="cuda:0")
     return parser.parse_args()
 
@@ -402,6 +423,7 @@ def model_zoo_preflight(root: Path, aliases: tuple[str, ...], device: torch.devi
 
 def main() -> None:
     args = parse_args()
+    seed_everything(args.attack_seed)
     targets = parse_ints(args.targets)
     if not targets or any(target == 0 or target < 0 or target > 9 for target in targets):
         raise ValueError("Stage 1D-WT targets must be nonzero CIFAR-10 classes")
@@ -467,17 +489,22 @@ def main() -> None:
         for seed, model in reference_models.items():
             logits, features, _ = logits_and_features(model, train_data, train_indices, target=target, batch_size=args.batch_size, device=device)
             radius, coarse_rows = coarse_probe_labels(model, train_data, train_indices, target=target, eps_pixels=train_eps, steps=args.train_steps, batch_size=args.batch_size, device=device, seed=seed)
-            finite = np.isfinite(radius)
+            finite = np.isfinite(radius) & (logits.argmax(dim=1).numpy() != target)
             feature_rows.extend(features[finite])
             label_rows.extend(radius[finite])
             for pos, sample_index in enumerate(train_indices):
+                eligible = bool(logits[pos].argmax().item() != target)
                 row = {
                     "phase": "probe_label",
+                    "model_alias": model_alias("clean", seed),
                     "reference_clean_seed": seed,
                     "target": target,
+                    "attack_target": target,
                     "sample_index": sample_index,
+                    "eligible": eligible,
+                    "pgd_status": "ineligible_original_target" if not eligible else ("censored" if not finite[pos] else "finite_label"),
                     "robustness_radius_pixels": None if not finite[pos] else float(radius[pos]),
-                    "censored": not bool(finite[pos]),
+                    "censored": None if not eligible else bool(not finite[pos]),
                     "original_prediction": int(logits[pos].argmax().item()),
                 }
                 row.update({f"feature_{name}": float(features[pos, col]) for col, name in enumerate(names)})
@@ -786,7 +813,7 @@ def main() -> None:
                 trig_concentration = concentration(trigger_delta[cohort]) if np.any(cohort) else None
                 trig_prototype = prototype(trigger_delta[cohort]) if np.any(cohort) else None
                 if trig_prototype is not None:
-                    trigger_prototypes[f"{trigger_type}:{model_alias}:target{target}"] = trig_prototype.tolist()
+                    trigger_prototypes[f"{trigger_type}:{public_alias}:target{target}"] = trig_prototype.tolist()
                 for eps in analysis_eps:
                     endpoint = record["endpoint_by_eps"][eps]
                     adv_delta = endpoint["features"] - record["base_features"]

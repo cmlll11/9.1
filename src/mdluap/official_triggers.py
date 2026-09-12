@@ -86,6 +86,15 @@ class FixedImageTrigger(TriggerAdapter):
         trigger = self.image.to(images.device, images.dtype).unsqueeze(0)
         if self.mode == "badnet":
             return torch.where(trigger > 0, trigger, images)
+        if self.mode == "blended":
+            # BackdoorBench's official test transform applies
+            # np.clip(...).astype(np.uint8) after blending.  Reproduce that
+            # floor-to-uint8 conversion before the Model Zoo normalization.
+            blended = (
+                (1.0 - self.alpha) * images.to(torch.float64)
+                + self.alpha * trigger.to(torch.float64)
+            ).clamp(0.0, 1.0)
+            return (torch.floor(blended * 255.0).clamp(0.0, 255.0) / 255.0).to(images.dtype)
         return ((1.0 - self.alpha) * images + self.alpha * trigger).clamp(0.0, 1.0)
 
 
@@ -231,7 +240,15 @@ class SSBAEncoderTrigger(TriggerAdapter):
 
 
 def _image(path: Path) -> torch.Tensor:
-    image = Image.open(path).convert("RGB").resize((32, 32), Image.Resampling.BILINEAR)
+    if path.suffix.lower() in {".jpg", ".jpeg"}:
+        # BackdoorBench decodes the official Blended JPEG with imageio before
+        # converting it to a PIL image for the official resize path.
+        import imageio.v2 as imageio
+
+        image = Image.fromarray(np.asarray(imageio.imread(path))).convert("RGB")
+    else:
+        image = Image.open(path).convert("RGB")
+    image = image.resize((32, 32), Image.Resampling.BILINEAR)
     return torch.from_numpy(np.asarray(image, dtype=np.float32) / 255.0).permute(2, 0, 1).contiguous()
 
 
