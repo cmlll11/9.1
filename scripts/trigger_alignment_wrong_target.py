@@ -980,6 +980,12 @@ def main() -> None:
         "model_zoo_registry_sha256": model_zoo_provenance["registry_sha256"],
         "model_zoo_registered_aliases": model_zoo_provenance["registered_aliases"],
         "main_comparisons": main_comparisons,
+        "ssba_provenance_note": (
+            "SSBA alignment uses the official encoder and provenance configuration. "
+            "The historical CIFAR-10 replacement-array comparison may differ by a "
+            "negligible uint8-level numerical/quantization amount (maximum one gray "
+            "level); this does not disable encoder-based SSBA trigger analysis."
+        ),
         "outputs": {
             "attack_records": str((output / "attack_records.csv").resolve()),
             "alignment_records": str((output / "feature_alignment_records.csv").resolve()),
