@@ -24,8 +24,19 @@ from mdluap.official_triggers import (
 def cifar10_test_images(path: Path) -> torch.Tensor:
     with path.open("rb") as handle:
         payload = pickle.load(handle, encoding="bytes")
-    values = np.asarray(payload[b"data"], dtype=np.float32).reshape(-1, 3, 32, 32) / 255.0
-    return torch.from_numpy(values)
+    # The official SSBA pipeline reads PNG files with torchvision.ToTensor().
+    # ToTensor first creates a uint8 CHW tensor, converts it to float32 in
+    # Torch, and only then divides by 255.  Performing the division in NumPy
+    # first can differ by one float32 ulp for a few input values; those tiny
+    # differences can cross a uint8 rounding boundary after the encoder.
+    values = np.asarray(payload[b"data"], dtype=np.uint8).reshape(-1, 3, 32, 32)
+    return (
+        torch.from_numpy(values.transpose(0, 2, 3, 1).copy())
+        .permute(0, 3, 1, 2)
+        .contiguous()
+        .float()
+        .div(255.0)
+    )
 
 
 def canonical_reference(path: Path) -> np.ndarray:
