@@ -43,6 +43,29 @@ class TriggerAdapter:
         raise NotImplementedError
 
 
+def _quantize_like_torchvision_save_image(values: torch.Tensor) -> torch.Tensor:
+    """Quantize ``[0, 1]`` images exactly as torchvision ``save_image``.
+
+    BackdoorBench's official SSBA pipeline calls ``torchvision.utils.save_image``
+    on each encoder output.  The torchvision implementation converts floating
+    point pixels with ``floor(255 * value + 0.5)`` when it casts to ``uint8``;
+    this is *not* identical to ``torch.round`` at half-integer values because
+    ``torch.round`` uses round-to-even semantics.  Keeping the quantization in
+    one helper makes the in-memory SSBA trigger and the provenance checker use
+    the same pixel convention as the official PNG files.
+
+    Args:
+        values: Image tensor with arbitrary leading dimensions and values
+            expected in ``[0, 1]``.
+
+    Returns:
+        A float tensor whose values are the exact uint8 levels divided by 255.
+        The shape and device match ``values``.
+    """
+
+    return torch.floor(values * 255.0 + 0.5).clamp(0.0, 255.0) / 255.0
+
+
 class UnavailableTrigger(TriggerAdapter):
     """Adapter used when the official trigger cannot be reproduced."""
 
@@ -200,7 +223,10 @@ class SSBAEncoderTrigger(TriggerAdapter):
             output = images + output
         output = output.clamp(0.0, 1.0)
         if bool(self.provenance.get("quantize_uint8", True)):
-            output = torch.round(output * 255.0) / 255.0
+            # The official embed_fingerprints.py writes every output with
+            # torchvision.save_image().  Reproduce its half-up uint8
+            # conversion before returning the trigger image to the experiment.
+            output = _quantize_like_torchvision_save_image(output)
         return output
 
 

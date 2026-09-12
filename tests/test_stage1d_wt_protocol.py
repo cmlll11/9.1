@@ -19,7 +19,7 @@ from trigger_alignment_wrong_target import (
     parse_floats,
     probe_topk_positions,
 )
-from mdluap.official_triggers import _array
+from mdluap.official_triggers import _array, _quantize_like_torchvision_save_image
 
 
 def test_model_aliases_are_explicit():
@@ -85,3 +85,11 @@ def test_ssba_array_accepts_hwc(tmp_path):
     np.save(path, np.zeros((2, 32, 32, 3), dtype=np.uint8))
     values = _array(path)
     assert tuple(values.shape) == (2, 3, 32, 32)
+
+
+def test_ssba_quantization_matches_torchvision_half_up():
+    # torchvision.save_image() maps half-integer uint8 levels using
+    # floor(255 * value + 0.5), whereas torch.round() uses round-to-even.
+    values = torch.tensor([0.5, 1.5, 2.5], dtype=torch.float32) / 255.0
+    quantized = _quantize_like_torchvision_save_image(values) * 255.0
+    torch.testing.assert_close(quantized, torch.tensor([1.0, 2.0, 3.0]))

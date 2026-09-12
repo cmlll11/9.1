@@ -15,7 +15,10 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from mdluap.official_triggers import build_trigger_adapters
+from mdluap.official_triggers import (
+    _quantize_like_torchvision_save_image,
+    build_trigger_adapters,
+)
 
 
 def cifar10_test_images(path: Path) -> torch.Tensor:
@@ -141,7 +144,14 @@ def main() -> None:
             end = min(start + args.batch_size, len(images))
             batch = images[start:end].to(device)
             generated.append(adapter.apply(batch, sample_indices=list(range(start, end)), split="cifar100_test").cpu())
-    generated_np = torch.cat(generated).permute(0, 2, 3, 1).mul(255.0).round().clamp(0, 255).byte().numpy()
+    # adapter.apply() already follows the official save_image quantization.
+    # Apply the same conversion once more here to obtain the uint8 array that
+    # the official PNG -> NPY packing step stores.
+    generated_float = torch.cat(generated).permute(0, 2, 3, 1)
+    generated_np = (
+        _quantize_like_torchvision_save_image(generated_float)
+        * 255.0
+    ).to(torch.uint8).numpy()
     reference_np = canonical_reference(reference)
     if generated_np.shape != reference_np.shape:
         raise ValueError(f"SSBA shape mismatch: generated={generated_np.shape}, reference={reference_np.shape}")
@@ -155,6 +165,10 @@ def main() -> None:
         "exact_match": bool(np.array_equal(generated_np, reference_np)),
         "max_abs_pixel_diff": int(diff.max()),
         "different_pixel_count": int(np.count_nonzero(diff)),
+        "mean_abs_pixel_diff": float(diff.mean()),
+        "positive_diff_count": int(np.count_nonzero(generated_np.astype(np.int16) > reference_np.astype(np.int16))),
+        "negative_diff_count": int(np.count_nonzero(generated_np.astype(np.int16) < reference_np.astype(np.int16))),
+        "quantization": "torchvision_save_image_floor_255x_plus_half_to_uint8",
         "config": config,
         "decoder_validation": decoder_validation,
     }
